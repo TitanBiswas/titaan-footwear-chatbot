@@ -1,0 +1,6 @@
+{
+  "name": "Titaan Footwear Official Store",
+  "description": "Replica of the Titaan Footwear official online store and sale catalog with complete filter system, product details, interactive cart, wishlist, and checkout.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
