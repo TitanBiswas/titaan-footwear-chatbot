@@ -1,5 +1,7 @@
 # Titaan Footwear — Storefront + AI Concierge Chatbot
 
+**Live demo:** https://titaan-footwear-chatbot.vercel.app
+
 A full front-end e-commerce demo for **Titaan Footwear**, a luxury footwear
 brand storefront, featuring a built-in **Titaan Concierge** chatbot that
 guides visitors from greeting → style preference → curated product picks →
