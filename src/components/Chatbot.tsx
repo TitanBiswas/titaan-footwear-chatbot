@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useShop } from '../context/ShopContext';
-import { Product } from '../types';
+import { Product, CartItem } from '../types';
 import {
   MessageSquare,
   X,
@@ -39,6 +39,8 @@ interface ChatMessage {
   showVideoCarousel?: boolean;
   showPincodeInput?: boolean;
   showOrderSummary?: boolean;
+  orderItems?: CartItem[];
+  orderTotal?: number;
   selectedProduct?: Product | null;
   pincode?: string;
   showSupportCard?: boolean;
@@ -100,7 +102,11 @@ const CRAFTSMANSHIP_VIDEOS: VideoStory[] = [
 export const Chatbot: React.FC = () => {
   const {
     products,
+    cart,
+    cartFinalTotal,
     addToCart,
+    applyCoupon,
+    placeOrder,
     setActiveProductDetail,
     setIsCartOpen,
     setIsCheckoutOpen,
@@ -128,13 +134,15 @@ export const Chatbot: React.FC = () => {
     pincode: string;
     fallbackCount: number;
     stepHistory: string[];
+    pendingStyleKey: string | null;
   }>({
     shoppingFor: 'Myself',
     stylePreference: 'All',
     selectedProduct: null,
     pincode: '',
     fallbackCount: 0,
-    stepHistory: ['step-welcome']
+    stepHistory: ['step-welcome'],
+    pendingStyleKey: null
   });
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -288,6 +296,20 @@ export const Chatbot: React.FC = () => {
         case 'action_target_myself':
         case 'action_target_gift': {
           const target = action === 'action_target_myself' ? 'Myself' : 'Someone Else';
+
+          // If the user arrived via a top-level "Browse Formal/Sneakers" shortcut,
+          // this qualifying question was inserted before the carousel — honor that
+          // pending style now instead of asking a second (redundant) style question.
+          if (sessionData.pendingStyleKey) {
+            const pendingKey = sessionData.pendingStyleKey;
+            setSessionData((prev) => ({ ...prev, shoppingFor: target, pendingStyleKey: null }));
+            showCuratedPicks(
+              pendingKey,
+              pendingKey === 'Formal Shoes' ? 'Formal & Oxford styles' : 'Urban sneakers'
+            );
+            break;
+          }
+
           setSessionData((prev) => ({
             ...prev,
             shoppingFor: target,
@@ -309,14 +331,34 @@ export const Chatbot: React.FC = () => {
           break;
         }
 
+        // --- TOP-LEVEL SHORTCUTS: ask the one qualifying question first,      ---
+        // --- then show the same curated carousel as the full tour would.     ---
+        case 'action_browse_formal':
+        case 'action_browse_sneakers': {
+          const key = action === 'action_browse_formal' ? 'Formal Shoes' : 'Sneakers';
+          setSessionData((prev) => ({
+            ...prev,
+            pendingStyleKey: key,
+            stepHistory: [...prev.stepHistory, 'step-preference-target']
+          }));
+          addBotMessage({
+            text: 'Great pick! One quick question first — who are we shopping for today?',
+            step: 'step-preference-target',
+            quickReplies: [
+              { label: '👔 Myself', action: 'action_target_myself' },
+              { label: '🎁 Gift for Someone Else', action: 'action_target_gift' },
+              { label: '⬅ Back', action: 'action_back_to_welcome' }
+            ]
+          });
+          break;
+        }
+
         // --- STEP 2: SHOW CURATED PICKS (CAROUSEL) ---
         case 'action_style_formal':
-        case 'action_browse_formal':
           showCuratedPicks('Formal Shoes', 'Formal & Oxford styles');
           break;
 
         case 'action_style_sneakers':
-        case 'action_browse_sneakers':
           showCuratedPicks('Sneakers', 'Urban sneakers');
           break;
 
@@ -421,6 +463,97 @@ export const Chatbot: React.FC = () => {
               { label: '✨ Back to Shopping Tour', action: 'action_start_tour' },
               { label: '🎥 Watch Craftsmanship Videos', action: 'action_show_craft_videos' }
             ]
+          });
+          break;
+
+        // --- STEP 6: ORDER SUMMARY, CONFIRMATION & CLOSING (Objective O4) ---
+        case 'action_open_cart':
+          if (cart.length === 0) {
+            addBotMessage({
+              text: "Your bag's empty right now — let's fix that. Want me to show you a few handcrafted picks?",
+              quickReplies: [
+                { label: '👞 Help Me Pick Shoes', action: 'action_start_tour' },
+                { label: '⬅ Back', action: 'action_back_to_welcome' }
+              ]
+            });
+            break;
+          }
+          setIsCartOpen(true);
+          setSessionData((prev) => ({
+            ...prev,
+            stepHistory: [...prev.stepHistory, 'step-order-summary']
+          }));
+          addBotMessage({
+            text: `Here's your bag${sessionData.pincode ? ` — ready to ship to **${sessionData.pincode}**` : ''}. Everything look right?`,
+            step: 'step-order-summary',
+            showOrderSummary: true,
+            orderItems: cart,
+            orderTotal: cartFinalTotal,
+            quickReplies: [
+              { label: '✅ Confirm Order', action: 'action_confirm_order' },
+              { label: '🏷 Apply FLAT 50% Coupon', action: 'action_apply_coupon_bot' },
+              { label: '👞 Pick More Shoes', action: 'action_start_tour' },
+              { label: '⬅ Back', action: 'action_back_to_welcome' }
+            ]
+          });
+          break;
+
+        case 'action_confirm_order': {
+          if (cart.length === 0) {
+            addBotMessage({
+              text: "Looks like your bag is empty, so there's nothing to confirm yet. Let's find you a pair first.",
+              quickReplies: [{ label: '👞 Help Me Pick Shoes', action: 'action_start_tour' }]
+            });
+            break;
+          }
+          const order = placeOrder(
+            {
+              fullName: 'Titaan Concierge Guest',
+              mobile: '',
+              pincode: sessionData.pincode || '110001',
+              flatHouse: '',
+              areaStreet: '',
+              city: '',
+              state: '',
+              addressType: 'Home'
+            },
+            'COD'
+          );
+          setIsCartOpen(false);
+          addBotMessage({
+            text: `🎉 You're all set! Order **${order.id}** is confirmed${sessionData.pincode ? ` for delivery to **${sessionData.pincode}**` : ''} — estimated by **${order.estimatedDeliveryDate}**. You'll get a tracking link by email shortly. Thank you for choosing Titaan Footwear!`,
+            step: 'step-closing',
+            quickReplies: [
+              { label: '📦 Track My Order', action: 'action_open_tracker' },
+              { label: '💬 Talk to Support', action: 'action_contact_support' },
+              { label: '👋 No thanks, bye', action: 'action_say_bye' }
+            ]
+          });
+          break;
+        }
+
+        case 'action_apply_coupon_bot': {
+          const result = applyCoupon('TITAAN50');
+          addBotMessage({
+            text: result.success
+              ? `${result.message} 🎉 Ready to lock in your order?`
+              : `Hmm — ${result.message}`,
+            quickReplies: result.success
+              ? [
+                  { label: '✅ Confirm Order', action: 'action_confirm_order' },
+                  { label: '🛍 View Bag', action: 'action_open_cart' }
+                ]
+              : [
+                  { label: '👞 Pick More Shoes', action: 'action_start_tour' },
+                  { label: '🛍 View Bag', action: 'action_open_cart' }
+                ]
+          });
+          break;
+        }
+
+        case 'action_say_bye':
+          addBotMessage({
+            text: 'Thanks for stopping by Titaan Footwear — hope to see you (and your new shoes) again soon! 👋'
           });
           break;
 
@@ -647,7 +780,7 @@ export const Chatbot: React.FC = () => {
         text: "Hmm, I didn't quite catch that. Here are the most helpful ways I can assist you right now:",
         quickReplies: [
           { label: '✨ Help Me Pick Shoes', action: 'action_start_tour' },
-          { label: '🎥 How Inuit / Titaan Shoes Are Made', action: 'action_show_craft_videos' },
+          { label: '🎥 How Titaan Shoes Are Made', action: 'action_show_craft_videos' },
           { label: '📦 Check Delivery Pincode', action: 'action_ask_pincode' },
           { label: '💬 Talk to Customer Support', action: 'action_contact_support' }
         ]
@@ -662,9 +795,8 @@ export const Chatbot: React.FC = () => {
 
   const handleQuickAdd = (product: Product) => {
     const defaultSize = product.sizes[0] || 8;
-    const defaultColor = product.colors[0] || 'Black';
+    const defaultColor = product.colors[0]?.name || 'Black';
     addToCart(product, defaultSize, defaultColor, 1);
-    addToast(`Added ${product.title} to Bag!`, 'success');
   };
 
   const handleVideoCardClick = (video: VideoStory) => {
@@ -885,13 +1017,13 @@ export const Chatbot: React.FC = () => {
                             >
                               <div className="relative aspect-[4/3] bg-neutral-200 overflow-hidden">
                                 <img
-                                  src={prod.image}
+                                  src={prod.images[0]}
                                   alt={prod.title}
                                   referrerPolicy="no-referrer"
                                   className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                                 />
                                 <span className="absolute top-2 left-2 bg-red-600 text-white font-extrabold text-[9px] px-1.5 py-0.5 rounded shadow">
-                                  {prod.discount}% OFF
+                                  {prod.discountPercentage}% OFF
                                 </span>
                               </div>
 
@@ -1006,6 +1138,37 @@ export const Chatbot: React.FC = () => {
                       </div>
                     )}
 
+                    {/* Step 6: Order/Bag Summary (snapshot at the time this message was sent) */}
+                    {msg.showOrderSummary && msg.orderItems && (
+                      <div className="mt-3 pt-3 border-t border-neutral-100 space-y-2">
+                        {msg.orderItems.map((item) => (
+                          <div key={item.id} className="flex items-center gap-2.5">
+                            <img
+                              src={item.product.images[0]}
+                              alt={item.product.title}
+                              referrerPolicy="no-referrer"
+                              className="w-10 h-10 rounded-lg object-cover border border-neutral-200 shrink-0"
+                            />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-[11px] font-bold text-neutral-900 line-clamp-1">{item.product.title}</p>
+                              <p className="text-[10px] text-neutral-500">
+                                Size {item.selectedSize} • {item.selectedColor} • Qty {item.quantity}
+                              </p>
+                            </div>
+                            <span className="text-[11px] font-extrabold text-neutral-900 shrink-0">
+                              ₹{(item.product.price * item.quantity).toLocaleString('en-IN')}
+                            </span>
+                          </div>
+                        ))}
+                        <div className="flex items-center justify-between pt-2 border-t border-neutral-100 text-xs">
+                          <span className="font-semibold text-neutral-600">Total</span>
+                          <span className="font-extrabold text-neutral-900">
+                            ₹{(msg.orderTotal ?? 0).toLocaleString('en-IN')}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+
                     {/* Human Support Card */}
                     {msg.showSupportCard && (
                       <div className="mt-3 p-3 bg-neutral-900 text-white rounded-xl space-y-2 border border-neutral-800">
@@ -1091,7 +1254,8 @@ export const Chatbot: React.FC = () => {
                       selectedProduct: null,
                       pincode: '',
                       fallbackCount: 0,
-                      stepHistory: ['step-welcome']
+                      stepHistory: ['step-welcome'],
+                      pendingStyleKey: null
                     });
                   }}
                   className="text-neutral-500 hover:text-neutral-900 flex items-center gap-0.5"
